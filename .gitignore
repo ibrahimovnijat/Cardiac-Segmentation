@@ -1,1 +1,85 @@
-__pycache__/*
+# ---------------------------------------------------------------- Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------- Notebooks
+.ipynb_checkpoints/
+*-checkpoint.ipynb
+
+# ---------------------------------------------------------------- Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# ---------------------------------------------------------------- Medical image data
+# The CAMUS corpus is licence-restricted (see MANDATORY_CITATION.md and
+# LICENSE_TERMS.md shipped with it) and lives outside this repo. These patterns
+# stop a stray copy, export, or prediction volume from being committed.
+data/
+datasets/
+CAMUS_public/
+*.nii
+*.nii.gz
+*.nrrd
+*.mha
+*.mhd
+*.raw
+*.dcm
+*.dicom
+
+# ---------------------------------------------------------------- Model artefacts
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+*.h5
+*.pkl
+checkpoints/
+weights/
+
+# ---------------------------------------------------------------- Experiment tracking & outputs
+mlruns/
+mlartifacts/
+wandb/
+runs/
+lightning_logs/
+logs/
+outputs/
+predictions/
+events.out.tfevents.*
+
+# ---------------------------------------------------------------- OS / editor
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+.idea/
+
+# ---------------------------------------------------------------- Local agent config
+# Machine-local Claude Code permissions; the shared config in .claude/ stays tracked.
+/.claude/settings.local.json
