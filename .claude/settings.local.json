@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/ibrahimov/Desktop/LUMA_assignment/**)",
+      "Bash(python3 -c ' *)",
+      "Bash(/usr/bin/python3 -c ' *)",
+      "Bash(python3 -c \"import torch; print\\(torch.__version__\\)\")",
+      "Bash(python3 *)"
+    ]
+  }
+}
