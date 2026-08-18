@@ -71,7 +71,7 @@ def seed_worker(worker_id: int) -> None:
     random.seed(worker_seed)
 
 
-def build_loaders(cfg: TrainConfig) -> tuple[DataLoader, DataLoader]:
+def build_data_loaders(cfg: TrainConfig) -> tuple[DataLoader, DataLoader]:
     """Train and validation loaders over the official patient-level splits."""
     size = (cfg.image_size, cfg.image_size)
     train_ds = CAMUSDataset(cfg.data_root, split="train", image_size=size)
@@ -201,9 +201,10 @@ def main(cfg: TrainConfig) -> None:
     if cfg.amp and not use_amp:
         print(f"AMP requested but not enabled on device '{device.type}'; running in fp32.")
 
-    train_loader, val_loader = build_loaders(cfg)
+    train_loader, val_loader = build_data_loaders(cfg)
     model = build_unet().to(device)
 
+    # Define DICE + Cross Entropy loss, with optional background inclusion and weighting.
     loss_fn = DiceCELoss(
         include_background=cfg.include_background_in_dice,
         to_onehot_y=True,
