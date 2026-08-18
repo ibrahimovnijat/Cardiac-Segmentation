@@ -1,9 +1,16 @@
 """Segmentation evaluation for CAMUS.
 
-Reports overlap (Dice) alongside boundary accuracy (HD95, ASSD). Dice alone is
-a poor guide here: it saturates on a large convex structure like the LV cavity
-while the endocardial border - the thing LV volume and ejection fraction are
-derived from - can still be several millimetres out.
+Reports overlap (Dice, IoU), per-class error rates (TPR, misclassification)
+and boundary accuracy (HD95, ASSD). Dice alone is a poor guide here: it
+saturates on a large convex structure like the LV cavity while the endocardial
+border - the thing LV volume and ejection fraction are derived from - can still
+be several millimetres out.
+
+The rate metrics separate the two ways a class can go wrong, which the overlap
+scores blend together: TPR (sensitivity, recall) counts only what was missed,
+so a model that over-predicts a class scores well on it, while the
+misclassification rate counts missed *and* invented pixels against the true
+extent of the class.
 
 Distances are computed in millimetres using each sample's own pixel spacing, so
 resizing in the data pipeline does not silently change what a "1.0" means.
@@ -19,15 +26,23 @@ from typing import Any, Iterable, Mapping, Sequence
 import torch
 from monai.metrics import (
     compute_average_surface_distance,
+    compute_confusion_matrix_metric,
     compute_dice,
     compute_hausdorff_distance,
+    compute_iou,
+    get_confusion_matrix,
 )
 from monai.networks.utils import one_hot
 
 from camus_dataset import LABELS, NUM_CLASSES
 
-#: Metrics reported per class. Dice is unitless; the distances are in mm.
-METRIC_NAMES: tuple[str, ...] = ("dice", "hd95", "assd")
+#: Metrics reported per class. Dice, IoU, TPR and the misclassification rate
+#: are unitless; the distances are in mm.
+METRIC_NAMES: tuple[str, ...] = ("dice", "iou", "tpr", "misclass", "hd95", "assd")
+
+#: Metrics where a larger value is a better result. The rest - the distances and
+#: the misclassification rate - are errors, so they sort the other way.
+HIGHER_IS_BETTER: frozenset[str] = frozenset({"dice", "iou", "tpr"})
 
 
 @dataclass
@@ -136,6 +151,25 @@ class SegmentationEvaluator:
         dice = compute_dice(
             pred_oh, target_oh, include_background=self.include_background, ignore_empty=True
         )
+        iou = compute_iou(
+            pred_oh, target_oh, include_background=self.include_background, ignore_empty=True
+        )
+
+        # (B, C, 4) of [tp, fp, tn, fn]; the rate metrics are all read off this,
+        # so they cost one pass rather than one pass each.
+        confusion = get_confusion_matrix(
+            pred_oh, target_oh, include_background=self.include_background
+        )
+        tpr = compute_confusion_matrix_metric("sensitivity", confusion)
+        tp, fp, fn = confusion[..., 0], confusion[..., 1], confusion[..., 3]
+        support = tp + fn
+        # Misclassified pixels relative to the class's true size. Unlike 1 - TPR
+        # this also charges for over-segmentation, so it can exceed 1 when the
+        # model invents more pixels than it misses. NaN where the class is
+        # absent from the ground truth, matching Dice/IoU's ignore_empty.
+        misclass = torch.where(
+            support > 0, (fp + fn) / support, torch.full_like(support, float("nan"))
+        )
 
         if self.compute_distances:
             spacing_arg = self._spacing_arg(spacing, batch_size=pred.shape[0])
@@ -163,6 +197,9 @@ class SegmentationEvaluator:
             for col, (index, name) in enumerate(zip(self.class_indices, self.class_names)):
                 case.metrics[name] = {
                     "dice": float(dice[i, col]),
+                    "iou": float(iou[i, col]),
+                    "tpr": float(tpr[i, col]),
+                    "misclass": float(misclass[i, col]),
                     "hd95": float(hd95[i, col]),
                     "assd": float(assd[i, col]),
                 }
@@ -225,13 +262,19 @@ class SegmentationEvaluator:
         return out
 
     def worst_cases(self, n: int = 5, metric: str = "dice") -> list[tuple[str, float]]:
-        """The n cases with the worst class-averaged `metric`, for eyeballing."""
+        """The n cases with the worst class-averaged `metric`, for eyeballing.
+
+        "Worst" follows the metric: lowest first for Dice/IoU/TPR, highest first
+        for the distances and the misclassification rate.
+        """
+        if metric not in METRIC_NAMES:
+            raise ValueError(f"metric must be one of {METRIC_NAMES}, got {metric!r}.")
         scored = []
         for case in self.results:
             mean, n_valid = _finite_mean([case.metrics[c][metric] for c in self.class_names])
             if n_valid:
                 scored.append((case.key, mean))
-        scored.sort(key=lambda kv: kv[1], reverse=metric != "dice")
+        scored.sort(key=lambda kv: kv[1], reverse=metric not in HIGHER_IS_BETTER)
         return scored[:n]
 
     # ---------------------------------------------------------------- output
@@ -240,18 +283,22 @@ class SegmentationEvaluator:
         """Human-readable table of the summary."""
         summary = summary or self.compute()
         width = max(len(n) for n in self.class_names) + 2
+        rule = "-" * (width + 58)
         lines = [
-            f"{'class':<{width}}{'Dice':>8}{'HD95 (mm)':>12}{'ASSD (mm)':>12}",
-            "-" * (width + 32),
+            f"{'class':<{width}}{'Dice':>8}{'IoU':>8}{'TPR':>8}{'Misclass':>10}"
+            f"{'HD95 (mm)':>12}{'ASSD (mm)':>12}",
+            rule,
         ]
         for name in self.class_names:
             row = summary["per_class"][name]
             lines.append(
-                f"{name:<{width}}{row['dice']:>8.4f}{row['hd95']:>12.3f}{row['assd']:>12.3f}"
+                f"{name:<{width}}{row['dice']:>8.4f}{row['iou']:>8.4f}{row['tpr']:>8.4f}"
+                f"{row['misclass']:>10.4f}{row['hd95']:>12.3f}{row['assd']:>12.3f}"
             )
-        lines.append("-" * (width + 32))
+        lines.append(rule)
         lines.append(
-            f"{'mean':<{width}}{summary['mean_dice']:>8.4f}"
+            f"{'mean':<{width}}{summary['mean_dice']:>8.4f}{summary['mean_iou']:>8.4f}"
+            f"{summary['mean_tpr']:>8.4f}{summary['mean_misclass']:>10.4f}"
             f"{summary['mean_hd95']:>12.3f}{summary['mean_assd']:>12.3f}"
         )
         lines.append(f"\ncases: {summary['n_cases']}")
@@ -346,6 +393,9 @@ if __name__ == "__main__":
     print("perfect prediction")
     print(perfect.report(summary))
     assert abs(summary["mean_dice"] - 1.0) < 1e-6, summary["mean_dice"]
+    assert abs(summary["mean_iou"] - 1.0) < 1e-6, summary["mean_iou"]
+    assert abs(summary["mean_tpr"] - 1.0) < 1e-6, summary["mean_tpr"]
+    assert summary["mean_misclass"] == 0.0, summary["mean_misclass"]
     assert summary["mean_hd95"] == 0.0 and summary["mean_assd"] == 0.0
 
     # Shift by 2 px at 0.5 mm/px -> boundary error of 1.0 mm.
@@ -356,4 +406,25 @@ if __name__ == "__main__":
     print("\n2 px shift at 0.5 mm/px")
     print(degraded.report(summary))
     assert abs(summary["mean_hd95"] - 1.0) < 1e-6, summary["mean_hd95"]
+
+    # The shift moves whole columns of each 24-wide block off their true
+    # position, so exactly 2/24 of every class is missed and the same number
+    # invented: TPR 22/24 and a misclassification rate of 4/24.
+    for name in degraded.class_names:
+        row = summary["per_class"][name]
+        assert abs(row["tpr"] - 22 / 24) < 1e-6, (name, row["tpr"])
+        assert abs(row["misclass"] - 4 / 24) < 1e-6, (name, row["misclass"])
+        # IoU and Dice measure the same overlap on different scales.
+        assert abs(row["iou"] - row["dice"] / (2 - row["dice"])) < 1e-6, name
+
+    # A class the model over-predicts keeps a perfect TPR but not a perfect
+    # misclassification rate - the pairing the report is there to expose.
+    greedy = target.clone()
+    greedy[:, 16:48, 16:48] = 1
+    over = SegmentationEvaluator(compute_distances=False)
+    over.update(logits_from(greedy), target, spacing=spacing, meta={"key": ["a", "b"]})
+    row = over.compute()["per_class"]["lv_endocardium"]
+    assert abs(row["tpr"] - 1.0) < 1e-6, row["tpr"]
+    assert row["misclass"] > 0.0 and row["dice"] < 1.0, row
+
     print("\nmetric sanity checks passed")
