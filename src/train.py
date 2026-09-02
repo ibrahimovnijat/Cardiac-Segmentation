@@ -287,7 +287,7 @@ def main(cfg: TrainConfig) -> None:
 
 
 def parse_args() -> TrainConfig:
-    default_root = Path(__file__).resolve().parent.parent / "CAMUS_public"
+    default_root = Path(__file__).resolve().parent.parent.parent / "CAMUS_public"
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data-root", default=str(default_root))
     parser.add_argument("--out-dir", default="runs/unet_baseline")
